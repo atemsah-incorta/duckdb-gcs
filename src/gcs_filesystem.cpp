@@ -516,6 +516,12 @@ bool GCSFileSystem::FileExists(const std::string &filename, optional_ptr<FileOpe
 	return object_metadata.ok();
 }
 
+bool GCSFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOpener> opener) {
+	// Potentially mimic how Azure Blob FileSystem does it and do it by calling Glob("directory/*").empty()
+	auto directory_name_fixed = directory[directory.length() - 1] == '/' ? directory : (directory + '/');
+	return FileExists(directory_name_fixed, opener);
+}
+
 duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo &info, FileOpenFlags flags,
                                                               optional_ptr<FileOpener> opener) {
 	GCSParsedUrl parsed_url;

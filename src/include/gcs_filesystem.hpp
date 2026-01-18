@@ -142,7 +142,7 @@ public:
 	const GCSReadOptions read_options;
 
 	// Write info
-	 duckdb::unique_ptr<gcs::ObjectWriteStream> writer;
+	duckdb::unique_ptr<gcs::ObjectWriteStream> writer;
 
 	// GCS-specific fields
 	std::string bucket;
@@ -196,6 +196,11 @@ public:
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
+	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+
+	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override {
+		// The concept of directories does not exist in GCS so we do nothing here
+	}
 
 	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
