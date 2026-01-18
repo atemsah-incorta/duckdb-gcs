@@ -8,6 +8,7 @@
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/logging/file_system_logger.hpp"
 #include "gcs_secret.hpp"
 
 #include <atomic>
@@ -333,6 +334,11 @@ void GCSFileSystem::Seek(FileHandle &handle, idx_t location) {
 	gcp_handle.file_offset = location;
 }
 
+idx_t GCSFileSystem::SeekPosition(FileHandle &handle) {
+	auto &gcp_handle = handle.Cast<GCSFileHandle>();
+	return gcp_handle.file_offset;
+}
+
 void GCSFileSystem::FileSync(FileHandle &handle) {
 	// No-op for read-only filesystem
 }
@@ -515,6 +521,14 @@ duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo
 	GCSParsedUrl parsed_url;
 	parsed_url.ParseUrl(info.path);
 
+	if (flags.OpenForAppending()) {
+		throw NotImplementedException("Cannot open a GCS file in append mode");
+	}
+
+	if (flags.OpenForReading() && (flags.OpenForWriting() || flags.OpenForAppending())) {
+		throw NotImplementedException("Cannot open a GCS file in read+write mode");
+	}
+
 	auto context = GetOrCreateStorageContext(opener, info.path, parsed_url);
 	if (!context) {
 		throw IOException("Failed to create GCS context");
@@ -524,6 +538,10 @@ duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo
 	auto handle =
 	    make_uniq<GCSFileHandle>(*this, info, flags, read_options, parsed_url.bucket, parsed_url.object_key, context);
 	handle->TryAddLogger(*opener);
+
+	if ((flags.OpenForWriting() || flags.OpenForAppending())) {
+		handle->InitializeWriter();
+	}
 
 	// Load file metadata
 	LoadFileInfo(*handle);
@@ -734,6 +752,11 @@ void GCSFileSystem::LoadRemoteFileInfo(GCSFileHandle &handle) {
 
 	auto object_metadata = gcs_context.GetClient().GetObjectMetadata(handle.bucket, handle.object_key);
 	if (!object_metadata) {
+		auto not_found = object_metadata.status().code() == google::cloud::StatusCode::kNotFound;
+		if (not_found && handle.flags.OpenForWriting()) {
+			return;
+		}
+
 		throw IOException("Failed to get object metadata: " + object_metadata.status().message());
 	}
 
@@ -746,6 +769,31 @@ void GCSFileSystem::LoadRemoteFileInfo(GCSFileHandle &handle) {
 	auto time_point = object_metadata->updated();
 	auto duration = time_point.time_since_epoch();
 	handle.last_modified = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+}
+
+int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
+	auto &gcp_handle = handle.Cast<GCSFileHandle>();
+	Write(handle, buffer, nr_bytes, gcp_handle.file_offset);
+	// LOG in Write()
+	return nr_bytes;
+}
+
+void GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	auto &gcp_handle = handle.Cast<GCSFileHandle>();
+
+	if (!(gcp_handle.flags.OpenForWriting() || gcp_handle.flags.OpenForAppending())) {
+		throw InternalException("Write called on file opened in read mode");
+	}
+
+	if (location != 0 && location != gcp_handle.file_offset) {
+		throw InternalException("Write supported only sequentially or at location=0");
+	}
+
+	gcp_handle.writer->write(reinterpret_cast<const char*>(buffer), nr_bytes);
+
+	gcp_handle.file_offset += nr_bytes;
+	gcp_handle.length += nr_bytes;
+	DUCKDB_LOG_FILE_SYSTEM_WRITE(handle, nr_bytes, gcp_handle.file_offset);
 }
 
 } // namespace duckdb

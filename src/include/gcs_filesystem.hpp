@@ -108,11 +108,20 @@ public:
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
 	void Close() override {
-		// No explicit cleanup needed.
+		if (writer) {
+			writer->Close();
+			if (!writer->metadata()) {
+				throw IOException("Failed to close writer: " + writer->metadata().status().message());
+			}
+		}
 	}
 
 	inline gcs::Client GetClient() {
 		return context->GetClient();
+	}
+
+	inline void InitializeWriter() {
+		writer = make_uniq<gcs::ObjectWriteStream>(GetClient().WriteObject(bucket, object_key, gcs::NewResumableUploadSession()));
 	}
 
 	FileOpenFlags flags;
@@ -131,6 +140,9 @@ public:
 	idx_t buffer_end;
 
 	const GCSReadOptions read_options;
+
+	// Write info
+	 duckdb::unique_ptr<gcs::ObjectWriteStream> writer;
 
 	// GCS-specific fields
 	std::string bucket;
@@ -172,6 +184,8 @@ public:
 	int64_t GetFileSize(FileHandle &handle) override;
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override;
 	void Seek(FileHandle &handle, idx_t location) override;
+	idx_t SeekPosition(FileHandle &handle) override;
+
 	void FileSync(FileHandle &handle) override;
 
 	bool LoadFileInfo(GCSFileHandle &handle);
@@ -182,6 +196,9 @@ public:
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
+
+	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
+	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 
 protected:
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &info, FileOpenFlags flags,
